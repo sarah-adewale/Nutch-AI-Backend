@@ -1,0 +1,95 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String   @id @default(cuid())
+  email         String?  @unique
+  authProvider  String?  // 'google', 'github', null for anonymous
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  // User limits and metadata
+  subscriptionTier String @default("free") // 'free', 'premium'
+  
+  // Relations
+  chatSessions  ChatSession[]
+  files         File[]
+  byokKeys      ByokKey[]
+  
+  @@map("users")
+}
+
+model ChatSession {
+  id        String   @id @default(cuid())
+  userId    String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  // Chat metadata
+  title     String?
+  modelUsed String
+  
+  // Relations
+  user     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages Message[]
+  
+  @@map("chat_sessions")
+}
+
+model Message {
+  id            String   @id @default(cuid())
+  sessionId     String
+  role          String   // 'user', 'assistant'
+  content       String
+  inputType     String?  // 'text', 'code', 'image'
+  context       String?
+  modelUsed     String?
+  timestamp     DateTime @default(now())
+  
+  // Relations
+  session ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  
+  @@map("messages")
+}
+
+model File {
+  id        String   @id @default(cuid())
+  userId    String
+  filename  String
+  folder    String   // '/code' or '/documents'
+  content   String
+  fileType  String
+  createdAt DateTime @default(now())
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@map("files")
+}
+
+model ByokKey {
+  id            String   @id @default(cuid())
+  userId        String
+  provider      String   // 'openai', 'anthropic', 'midjourney'
+  encryptedKey  String
+  keyMetadata   Json?
+  createdAt     DateTime @default(now())
+  
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@unique([userId, provider])
+  @@map("byok_keys")
+}
