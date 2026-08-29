@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsIn } from 'class-validator';
+import { IsString, IsOptional, IsIn, IsUrl } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class PromptRequestDto {
@@ -11,9 +11,9 @@ export class PromptRequestDto {
   user_id?: string;
 
   @ApiProperty({
-    description: 'AI model to use for processing',
-    example: 'gpt-4',
-    enum: ['gpt-4', 'gpt-3.5-turbo', 'claude-3', 'claude-2'],
+    description:
+      'Model id to route to. Call GET /ai/models for the current list.',
+    example: 'claude-opus-5',
   })
   @IsString()
   model: string;
@@ -40,4 +40,22 @@ export class PromptRequestDto {
   })
   @IsString()
   prompt: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Source URL of an image selected on the page. Required when input_type is "image".',
+    example: 'https://example.com/diagram.png',
+  })
+  @IsOptional()
+  @IsUrl()
+  image_url?: string;
+
+  @ApiPropertyOptional({
+    description:
+      'Continue an existing conversation. A new session is created when omitted.',
+    example: 'cmi8tb6tv0000rdimxbtp39do',
+  })
+  @IsOptional()
+  @IsString()
+  session_id?: string;
 }

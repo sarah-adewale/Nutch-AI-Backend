@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 import { S3Service } from './s3.service';
 
@@ -66,7 +66,7 @@ export class FilesService {
     });
 
     if (!file) {
-      throw new Error('File not found');
+      throw new NotFoundException('File not found');
     }
 
     await this.prisma.file.delete({

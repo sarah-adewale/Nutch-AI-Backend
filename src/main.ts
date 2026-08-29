@@ -4,6 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
+import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
+import { createCorsOriginHandler, parseCorsOrigins } from './common/cors';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -11,9 +13,13 @@ async function bootstrap() {
   // Security
   app.use(helmet());
 
-  // CORS for browser extension
+  // CORS for the browser extension. Origins are matched through a handler
+  // rather than a plain array so `chrome-extension://*` works as a wildcard.
+  const corsOrigins = parseCorsOrigins(process.env.CORS_ORIGIN);
   app.enableCors({
-    origin: process.env.CORS_ORIGIN?.split(',') || ['http://localhost:3000'],
+    origin: createCorsOriginHandler(
+      corsOrigins.length ? corsOrigins : ['http://localhost:3100'],
+    ),
     credentials: true,
   });
 
@@ -26,8 +32,12 @@ async function bootstrap() {
     }),
   );
 
-  // Global prefix
-  app.setGlobalPrefix('api');
+  // Consistent error bodies for anything a handler throws
+  app.useGlobalFilters(new AllExceptionsFilter());
+
+  // Global prefix. Versioned, matching the documented API contract and the
+  // callback URLs registered with the OAuth providers.
+  app.setGlobalPrefix('api/v1');
 
   // Swagger configuration
   const config = new DocumentBuilder()
@@ -39,6 +49,7 @@ async function bootstrap() {
     .addTag('ai', 'AI processing endpoints')
     .addTag('chat', 'Chat history endpoints')
     .addTag('files', 'File management endpoints')
+    .addTag('health', 'Service health endpoints')
     .addBearerAuth(
       {
         type: 'http',

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
 
 @Injectable()
@@ -64,7 +64,7 @@ export class ChatService {
     });
 
     if (!session) {
-      throw new Error('Chat session not found');
+      throw new NotFoundException('Chat session not found');
     }
 
     await this.prisma.chatSession.delete({
