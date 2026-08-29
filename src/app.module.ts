@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
-// import { BullModule } from '@nestjs/bull';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './database/prisma.module';
@@ -26,13 +25,6 @@ import { HealthModule } from './health/health.module';
         limit: parseInt(process.env.RATE_LIMIT_LIMIT || '100'),
       },
     ]),
-    // BullModule.forRoot({
-    //   redis: {
-    //     host: process.env.REDIS_HOST || 'localhost',
-    //     port: parseInt(process.env.REDIS_PORT || '6379'),
-    //     ...(process.env.REDIS_PASSWORD && { password: process.env.REDIS_PASSWORD }),
-    //   },
-    // }),
     PrismaModule,
     AuthModule,
     UsersModule,

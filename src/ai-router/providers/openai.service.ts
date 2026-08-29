@@ -1,63 +1,82 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import OpenAI from 'openai';
+import {
+  AiCompletion,
+  AiProvider,
+  GenerateParams,
+  ProviderName,
+} from './ai-provider.interface';
+import { isUsableApiKey } from './api-key';
 
 @Injectable()
-export class OpenAiService {
-  private openai: OpenAI;
+export class OpenAiService implements AiProvider {
+  readonly name: ProviderName = 'openai';
 
-  constructor(private configService: ConfigService) {
-    this.openai = new OpenAI({
-      apiKey: this.configService.get<string>('OPENAI_API_KEY'),
+  constructor(private configService: ConfigService) {}
+
+  isConfigured(apiKey?: string): boolean {
+    return isUsableApiKey(this.resolveKey(apiKey));
+  }
+
+  async generate(params: GenerateParams): Promise<AiCompletion> {
+    const response = await this.client(params.apiKey).chat.completions.create({
+      model: params.model,
+      messages: this.buildMessages(params),
+      max_tokens: params.maxOutputTokens,
     });
+
+    return {
+      text: response.choices[0]?.message?.content ?? '',
+      modelUsed: params.model,
+      provider: this.name,
+    };
   }
 
-  async generateResponse(prompt: string, model: string = 'gpt-4') {
-    try {
-      const response = await this.openai.chat.completions.create({
-        model,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 1500,
-      });
+  async *stream(params: GenerateParams): AsyncIterable<string> {
+    const stream = await this.client(params.apiKey).chat.completions.create({
+      model: params.model,
+      messages: this.buildMessages(params),
+      max_tokens: params.maxOutputTokens,
+      stream: true,
+    });
 
-      return {
-        response:
-          response.choices[0]?.message?.content || 'No response generated',
-        model_used: model,
-        timestamp: new Date().toISOString(),
-      };
-    } catch (error) {
-      console.error('OpenAI API error:', error);
-      throw new Error(`OpenAI API error: ${error.message}`);
+    for await (const chunk of stream) {
+      const delta = chunk.choices[0]?.delta?.content;
+      if (delta) yield delta;
     }
   }
 
-  async generateWithContext(
-    prompt: string,
-    context: string,
-    model: string = 'gpt-4',
-  ) {
-    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-      { role: 'system', content: context },
-      { role: 'user', content: prompt },
-    ];
+  private buildMessages(
+    params: GenerateParams,
+  ): OpenAI.Chat.ChatCompletionMessageParam[] {
+    const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [];
 
-    try {
-      const response = await this.openai.chat.completions.create({
-        model,
-        messages,
-        max_tokens: 1500,
-      });
-
-      return {
-        response:
-          response.choices[0]?.message?.content || 'No response generated',
-        model_used: model,
-        timestamp: new Date().toISOString(),
-      };
-    } catch (error) {
-      console.error('OpenAI API error:', error);
-      throw new Error(`OpenAI API error: ${error.message}`);
+    if (params.context) {
+      messages.push({ role: 'system', content: params.context });
     }
+
+    if (params.imageUrl) {
+      messages.push({
+        role: 'user',
+        content: [
+          { type: 'text', text: params.prompt },
+          { type: 'image_url', image_url: { url: params.imageUrl } },
+        ],
+      });
+      return messages;
+    }
+
+    messages.push({ role: 'user', content: params.prompt });
+    return messages;
+  }
+
+  private resolveKey(apiKey?: string): string | undefined {
+    return apiKey ?? this.configService.get<string>('OPENAI_API_KEY');
+  }
+
+  private client(apiKey?: string): OpenAI {
+    // Built per call so a user's own key is never cached onto a shared client.
+    return new OpenAI({ apiKey: this.resolveKey(apiKey) });
   }
 }
