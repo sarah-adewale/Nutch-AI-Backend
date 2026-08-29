@@ -11,6 +11,7 @@ import { AiRouterModule } from './ai-router/ai-router.module';
 import { ChatModule } from './chat/chat.module';
 import { FilesModule } from './files/files.module';
 import { EncryptionModule } from './encryption/encryption.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { EncryptionModule } from './encryption/encryption.module';
     ChatModule,
     FilesModule,
     EncryptionModule,
+    HealthModule,
   ],
   controllers: [AppController],
   providers: [AppService],
