@@ -17,6 +17,11 @@ import {
   ProviderName,
 } from './providers/ai-provider.interface';
 import {
+  ProviderException,
+  classifyProviderError,
+  safeDetail,
+} from './providers/provider-error';
+import {
   DEFAULT_MODEL_ID,
   ModelDefinition,
   findModel,
@@ -79,7 +84,9 @@ export class AiRouterService {
 
     await this.recordUserMessage(sessionId, request, resolved);
 
-    const completion = await resolved.provider.generate(resolved.params);
+    const completion = await this.callProvider(resolved, () =>
+      resolved.provider.generate(resolved.params),
+    );
 
     await this.chatService.addMessage(
       sessionId,
@@ -172,9 +179,14 @@ export class AiRouterService {
 
     let assembled = '';
     try {
-      for await (const delta of resolved.provider.stream(resolved.params)) {
-        assembled += delta;
-        yield { type: 'delta', text: delta };
+      const stream = resolved.provider.stream(resolved.params);
+      const iterator = stream[Symbol.asyncIterator]();
+
+      while (true) {
+        const next = await this.callProvider(resolved, () => iterator.next());
+        if (next.done) break;
+        assembled += next.value;
+        yield { type: 'delta', text: next.value };
       }
     } finally {
       // Persist whatever arrived, so an interrupted answer is not lost.
@@ -188,6 +200,27 @@ export class AiRouterService {
           resolved.definition.id,
         );
       }
+    }
+  }
+
+  /**
+   * Turns a provider SDK failure into an actionable status. Without this an
+   * unfunded key, a rate limit and a genuine outage all reach the extension as
+   * an indistinguishable 500.
+   */
+  private async callProvider<T>(
+    resolved: ResolvedRequest,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await call();
+    } catch (error) {
+      const failure = classifyProviderError(error);
+      throw new ProviderException(
+        resolved.definition.provider,
+        failure,
+        safeDetail(error, failure),
+      );
     }
   }
 
