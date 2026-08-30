@@ -4,6 +4,9 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ChatService } from '../chat/chat.service';
+import { FilesService } from '../files/files.service';
+import { LimitExceededException } from '../limits/limit-exceeded.exception';
+import { extractArtifacts, slugForPrompt } from './artifacts';
 import { PromptRequestDto } from './dto/prompt-request.dto';
 import { AiResponseDto } from './dto/ai-response.dto';
 import { AnthropicService } from './providers/anthropic.service';
@@ -13,6 +16,11 @@ import {
   GenerateParams,
   ProviderName,
 } from './providers/ai-provider.interface';
+import {
+  ProviderException,
+  classifyProviderError,
+  safeDetail,
+} from './providers/provider-error';
 import {
   DEFAULT_MODEL_ID,
   ModelDefinition,
@@ -37,6 +45,7 @@ export class AiRouterService {
     openai: OpenAiService,
     anthropic: AnthropicService,
     private chatService: ChatService,
+    private filesService: FilesService,
   ) {
     this.providers = { openai, anthropic };
   }
@@ -58,13 +67,26 @@ export class AiRouterService {
   async processPrompt(
     request: PromptRequestDto,
     userId: string,
-  ): Promise<AiResponseDto & { session_id: string }> {
+  ): Promise<
+    AiResponseDto & {
+      session_id: string;
+      files: Array<{
+        id: string;
+        filename: string;
+        folder: string;
+        fileType: string;
+      }>;
+      storage_limit_reached: boolean;
+    }
+  > {
     const resolved = this.resolve(request);
     const sessionId = await this.resolveSession(request, userId, resolved);
 
     await this.recordUserMessage(sessionId, request, resolved);
 
-    const completion = await resolved.provider.generate(resolved.params);
+    const completion = await this.callProvider(resolved, () =>
+      resolved.provider.generate(resolved.params),
+    );
 
     await this.chatService.addMessage(
       sessionId,
@@ -75,14 +97,67 @@ export class AiRouterService {
       completion.modelUsed,
     );
 
+    const saved = await this.saveArtifacts(
+      userId,
+      request.prompt,
+      completion.text,
+    );
+
     return {
       response: completion.text,
       model_used: completion.modelUsed,
       timestamp: new Date().toISOString(),
-      file_type: 'txt',
-      folder: '/documents',
+      file_type: saved.files[0]?.fileType ?? 'txt',
+      folder: saved.files[0]?.folder ?? '/documents',
       session_id: sessionId,
+      files: saved.files,
+      storage_limit_reached: saved.limitReached,
     };
+  }
+
+  /**
+   * Files any code blocks the answer produced. Saving is best effort: the
+   * completion has already been paid for, so hitting the storage cap returns
+   * the answer with a flag rather than failing the whole request.
+   */
+  private async saveArtifacts(
+    userId: string,
+    prompt: string,
+    response: string,
+  ) {
+    const artifacts = extractArtifacts(response, slugForPrompt(prompt));
+    const files: Array<{
+      id: string;
+      filename: string;
+      folder: string;
+      fileType: string;
+    }> = [];
+    let limitReached = false;
+
+    for (const artifact of artifacts) {
+      try {
+        const file = await this.filesService.createFile(
+          userId,
+          artifact.filename,
+          artifact.content,
+          artifact.fileType,
+        );
+        files.push({
+          id: file.id,
+          filename: file.filename,
+          folder: file.folder,
+          fileType: file.fileType,
+        });
+      } catch (error) {
+        if (error instanceof LimitExceededException) {
+          limitReached = true;
+          break;
+        }
+        throw error;
+      }
+    }
+
+    return { files, limitReached };
   }
 
   /**
@@ -104,9 +179,14 @@ export class AiRouterService {
 
     let assembled = '';
     try {
-      for await (const delta of resolved.provider.stream(resolved.params)) {
-        assembled += delta;
-        yield { type: 'delta', text: delta };
+      const stream = resolved.provider.stream(resolved.params);
+      const iterator = stream[Symbol.asyncIterator]();
+
+      while (true) {
+        const next = await this.callProvider(resolved, () => iterator.next());
+        if (next.done) break;
+        assembled += next.value;
+        yield { type: 'delta', text: next.value };
       }
     } finally {
       // Persist whatever arrived, so an interrupted answer is not lost.
@@ -120,6 +200,27 @@ export class AiRouterService {
           resolved.definition.id,
         );
       }
+    }
+  }
+
+  /**
+   * Turns a provider SDK failure into an actionable status. Without this an
+   * unfunded key, a rate limit and a genuine outage all reach the extension as
+   * an indistinguishable 500.
+   */
+  private async callProvider<T>(
+    resolved: ResolvedRequest,
+    call: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await call();
+    } catch (error) {
+      const failure = classifyProviderError(error);
+      throw new ProviderException(
+        resolved.definition.provider,
+        failure,
+        safeDetail(error, failure),
+      );
     }
   }
 

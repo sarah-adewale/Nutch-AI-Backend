@@ -69,8 +69,10 @@ model File {
   userId    String
   filename  String
   folder    String   // '/code' or '/documents'
-  content   String
+  content   String   // empty when the body lives in S3; read via storageKey
   fileType  String
+  size      Int      @default(0)
+  storageKey String? // S3 object key for offloaded files
   createdAt DateTime @default(now())
   
   // Relations

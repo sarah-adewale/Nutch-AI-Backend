@@ -3,6 +3,9 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { ChatService } from '../chat/chat.service';
+import { FilesService } from '../files/files.service';
+import { LimitExceededException } from '../limits/limit-exceeded.exception';
+import { ProviderException } from './providers/provider-error';
 import { AiRouterService } from './ai-router.service';
 import { AnthropicService } from './providers/anthropic.service';
 import { OpenAiService } from './providers/openai.service';
@@ -34,6 +37,7 @@ describe('AiRouterService', () => {
     getChatSession: jest.Mock;
     addMessage: jest.Mock;
   };
+  let files: { createFile: jest.Mock };
 
   const makeProvider = (name: string) => ({
     name,
@@ -55,10 +59,22 @@ describe('AiRouterService', () => {
       addMessage: jest.fn().mockResolvedValue({}),
     };
 
+    files = {
+      createFile: jest
+        .fn()
+        .mockImplementation((_u, filename, _c, fileType) => ({
+          id: 'f1',
+          filename,
+          fileType,
+          folder: fileType === 'ts' ? '/code' : '/documents',
+        })),
+    };
+
     service = new AiRouterService(
       openai as unknown as OpenAiService,
       anthropic as unknown as AnthropicService,
       chat as unknown as ChatService,
+      files as unknown as FilesService,
     );
   });
 
@@ -226,7 +242,9 @@ describe('AiRouterService', () => {
     it('does not persist an assistant message when the provider fails', async () => {
       anthropic.generate.mockRejectedValue(new Error('upstream down'));
 
-      await expect(service.processPrompt(basePrompt(), 'u1')).rejects.toThrow();
+      await expect(service.processPrompt(basePrompt(), 'u1')).rejects.toThrow(
+        ProviderException,
+      );
 
       expect(chat.addMessage).toHaveBeenCalledTimes(1);
       expect(chat.addMessage.mock.calls[0][1]).toBe('user');
@@ -265,9 +283,11 @@ describe('AiRouterService', () => {
         throw new Error('connection lost');
       });
 
+      // The raw SDK error is wrapped, so assert the classification instead of
+      // the upstream message.
       await expect(
         drain(service.streamPrompt(basePrompt(), 'u1')),
-      ).rejects.toThrow('connection lost');
+      ).rejects.toThrow(ProviderException);
 
       const assistant = chat.addMessage.mock.calls.find(
         (c) => c[1] === 'assistant',
@@ -302,6 +322,151 @@ describe('AiRouterService', () => {
       expect(
         service.listAvailableModels().every((m) => m.source === 'nutch'),
       ).toBe(true);
+    });
+  });
+
+  describe('file generation', () => {
+    const withCode = (text: string) =>
+      anthropic.generate.mockResolvedValue({
+        text,
+        modelUsed: 'claude-opus-5',
+        provider: 'anthropic',
+      });
+
+    it('saves a fenced code block as a file', async () => {
+      withCode(
+        'Here:\n```typescript\nexport const add = (a, b) => a + b;\n```',
+      );
+
+      const result = await service.processPrompt(basePrompt(), 'u1');
+
+      expect(files.createFile).toHaveBeenCalledTimes(1);
+      expect(result.files[0].folder).toBe('/code');
+      expect(result.file_type).toBe('ts');
+    });
+
+    it('saves nothing for a prose-only answer', async () => {
+      withCode('Just an explanation, no code at all here.');
+
+      const result = await service.processPrompt(basePrompt(), 'u1');
+
+      expect(files.createFile).not.toHaveBeenCalled();
+      expect(result.files).toEqual([]);
+      expect(result.folder).toBe('/documents');
+    });
+
+    it('names files from the prompt', async () => {
+      withCode('```typescript\nexport const add = (a, b) => a + b;\n```');
+
+      await service.processPrompt(
+        basePrompt({ prompt: 'Write an add function' }),
+        'u1',
+      );
+
+      const [, filename] = files.createFile.mock.calls[0];
+      expect(filename).toBe('write-an-add-function-1.ts');
+    });
+
+    it('still returns the answer when the storage cap is hit', async () => {
+      withCode('```typescript\nexport const add = (a, b) => a + b;\n```');
+      files.createFile.mockRejectedValue(
+        new LimitExceededException('files', 5, 5),
+      );
+
+      const result = await service.processPrompt(basePrompt(), 'u1');
+
+      // The completion is already paid for; failing the request would waste it.
+      expect(result.response).toContain('export const add');
+      expect(result.storage_limit_reached).toBe(true);
+      expect(result.files).toEqual([]);
+    });
+
+    it('propagates an unexpected storage failure', async () => {
+      withCode('```typescript\nexport const add = (a, b) => a + b;\n```');
+      files.createFile.mockRejectedValue(new Error('disk on fire'));
+
+      await expect(service.processPrompt(basePrompt(), 'u1')).rejects.toThrow(
+        'disk on fire',
+      );
+    });
+
+    it('stops saving after the first refusal rather than retrying each block', async () => {
+      withCode(
+        '```ts\nexport const a = () => 1234567;\n```\n```py\nprint("a long enough block")\n```',
+      );
+      files.createFile.mockRejectedValue(
+        new LimitExceededException('files', 5, 5),
+      );
+
+      await service.processPrompt(basePrompt(), 'u1');
+
+      expect(files.createFile).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('provider failures', () => {
+    const rejectWith = (status: number, message: string) =>
+      anthropic.generate.mockRejectedValue(
+        Object.assign(new Error(message), { status }),
+      );
+
+    it('turns an unfunded key into 402 rather than 500', async () => {
+      rejectWith(400, 'Your credit balance is too low');
+
+      await expect(
+        service.processPrompt(basePrompt(), 'u1'),
+      ).rejects.toMatchObject({ status: 402 });
+    });
+
+    it('names the provider that failed', async () => {
+      rejectWith(500, 'overloaded');
+
+      try {
+        await service.processPrompt(basePrompt(), 'u1');
+        throw new Error('expected a rejection');
+      } catch (error) {
+        expect((error as ProviderException).getResponse()).toMatchObject({
+          provider: 'anthropic',
+          failure: 'unavailable',
+        });
+      }
+    });
+
+    it('classifies a streaming failure the same way', async () => {
+      anthropic.stream.mockImplementation(async function* () {
+        yield 'partial';
+        throw Object.assign(new Error('Rate limit exceeded'), { status: 429 });
+      });
+
+      const gen = service.streamPrompt(basePrompt(), 'u1');
+      await expect(
+        (async () => {
+          for await (const _ of gen) {
+            void _;
+          }
+        })(),
+      ).rejects.toMatchObject({ status: 429 });
+    });
+
+    it('still persists the partial reply when a stream fails upstream', async () => {
+      anthropic.stream.mockImplementation(async function* () {
+        yield 'partial answer';
+        throw Object.assign(new Error('boom'), { status: 500 });
+      });
+
+      const gen = service.streamPrompt(basePrompt(), 'u1');
+      await expect(
+        (async () => {
+          for await (const _ of gen) {
+            void _;
+          }
+        })(),
+      ).rejects.toThrow();
+
+      const assistant = chat.addMessage.mock.calls.find(
+        (c) => c[1] === 'assistant',
+      );
+      expect(assistant?.[2]).toBe('partial answer');
     });
   });
 });

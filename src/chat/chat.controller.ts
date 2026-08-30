@@ -17,8 +17,15 @@ export class ChatController {
   constructor(private chatService: ChatService) {}
 
   @Get('sessions')
-  async getUserChatSessions(@CurrentUser() user: AuthUser) {
-    return this.chatService.getUserChatSessions(user.id);
+  async getUserChatSessions(
+    @CurrentUser() user: AuthUser,
+    @Query('limit') limit?: string,
+    @Query('cursor') cursor?: string,
+  ) {
+    return this.chatService.getUserChatSessions(user.id, {
+      limit: limit ? Number(limit) : undefined,
+      cursor,
+    });
   }
 
   @Get('sessions/:id')

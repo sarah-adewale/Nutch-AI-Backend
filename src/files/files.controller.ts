@@ -1,4 +1,4 @@
-import { Controller, Get, Delete, Param, UseGuards } from '@nestjs/common';
+import { Controller, Get, Delete, Param, Res, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import {
   ApiTags,
@@ -7,6 +7,7 @@ import {
   ApiBearerAuth,
   ApiParam,
 } from '@nestjs/swagger';
+import { Response } from 'express';
 import { FilesService } from './files.service';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/auth.service';
@@ -44,6 +45,34 @@ export class FilesController {
   @ApiResponse({ status: 401, description: 'Unauthorized' })
   async getUserFiles(@CurrentUser() user: AuthUser) {
     return this.filesService.getUserFiles(user.id);
+  }
+
+  @Get(':id/download')
+  @ApiOperation({
+    summary: 'Download a file',
+    description:
+      'Streams the file body as an attachment, reading from S3 when the file was offloaded.',
+  })
+  @ApiParam({ name: 'id', description: 'File ID to download' })
+  @ApiResponse({ status: 200, description: 'File body' })
+  @ApiResponse({ status: 401, description: 'Unauthorized' })
+  @ApiResponse({ status: 404, description: 'File not found' })
+  async downloadFile(
+    @Param('id') fileId: string,
+    @CurrentUser() user: AuthUser,
+    @Res() res: Response,
+  ): Promise<void> {
+    const { file, content } = await this.filesService.getFileContent(
+      user.id,
+      fileId,
+    );
+
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(file.filename)}"`,
+    );
+    res.send(content);
   }
 
   @Delete(':id')

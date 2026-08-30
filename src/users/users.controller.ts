@@ -7,6 +7,7 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { UsersService } from './users.service';
+import { LimitsService } from '../limits/limits.service';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthUser } from '../auth/auth.service';
 
@@ -15,7 +16,10 @@ import { AuthUser } from '../auth/auth.service';
 @Controller('users')
 @UseGuards(AuthGuard('jwt'))
 export class UsersController {
-  constructor(private usersService: UsersService) {}
+  constructor(
+    private usersService: UsersService,
+    private limits: LimitsService,
+  ) {}
 
   @Get('profile')
   @ApiOperation({
@@ -68,10 +72,9 @@ export class UsersController {
       isAnonymous,
       chatSessionCount,
       fileCount,
-      limits: {
-        maxChatSessions: isAnonymous ? 3 : -1,
-        maxFiles: isAnonymous ? 5 : -1,
-      },
+      // Read from the same service that enforces them, so the reported
+      // numbers cannot drift from the numbers actually applied.
+      limits: this.limits.limitsFor(isAnonymous),
     };
   }
 }

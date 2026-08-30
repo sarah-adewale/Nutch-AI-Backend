@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE "files" ADD COLUMN     "size" INTEGER NOT NULL DEFAULT 0,
+ADD COLUMN     "storageKey" TEXT;
