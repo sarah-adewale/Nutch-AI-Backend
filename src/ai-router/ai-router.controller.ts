@@ -39,8 +39,8 @@ export class AiRouterController {
       'Models the sidebar can offer, with their capabilities and whether a key is configured. Drives the model switcher.',
   })
   @ApiResponse({ status: 200, description: 'Model list' })
-  listModels() {
-    return this.aiRouterService.listAvailableModels();
+  listModels(@CurrentUser() user: AuthUser) {
+    return this.aiRouterService.listAvailableModels(user.id);
   }
 
   @Post('prompt')

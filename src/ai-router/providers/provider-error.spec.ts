@@ -105,6 +105,46 @@ describe('ProviderException', () => {
     });
   });
 
+  it('tells a user on the shared key to connect their own', () => {
+    const err = new ProviderException(
+      'anthropic',
+      'quota_exhausted',
+      undefined,
+      'nutch',
+    );
+
+    expect(err.getResponse()).toMatchObject({
+      message: expect.stringContaining('Connect your own API key'),
+    });
+  });
+
+  it('does not tell a BYOK user to connect a key they already connected', () => {
+    const err = new ProviderException(
+      'anthropic',
+      'quota_exhausted',
+      undefined,
+      'user',
+    );
+    const { message } = err.getResponse() as { message: string };
+
+    expect(message).toContain('Your connected API key');
+    expect(message).not.toContain('Connect your own API key');
+  });
+
+  it('leaves non-quota messages unaffected by key ownership', () => {
+    const asUser = new ProviderException(
+      'anthropic',
+      'unavailable',
+      undefined,
+      'user',
+    );
+    const asNutch = new ProviderException('anthropic', 'unavailable');
+
+    expect(asUser.getResponse()).toMatchObject({
+      message: (asNutch.getResponse() as { message: string }).message,
+    });
+  });
+
   it('maps our own bad credentials to 502, not 401', () => {
     // A 401 would suggest the caller's token is wrong; it is ours.
     expect(new ProviderException('openai', 'auth_failed').getStatus()).toBe(

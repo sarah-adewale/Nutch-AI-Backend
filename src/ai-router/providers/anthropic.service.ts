@@ -19,6 +19,15 @@ export class AnthropicService implements AiProvider {
     return isUsableApiKey(this.resolveKey(apiKey));
   }
 
+  async validateKey(apiKey: string): Promise<boolean> {
+    try {
+      await this.client(apiKey).models.list();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async generate(params: GenerateParams): Promise<AiCompletion> {
     const response = await this.client(params.apiKey).messages.create({
       model: params.model,

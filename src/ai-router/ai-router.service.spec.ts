@@ -4,6 +4,8 @@ import {
 } from '@nestjs/common';
 import { ChatService } from '../chat/chat.service';
 import { FilesService } from '../files/files.service';
+import { ByokService } from '../byok/byok.service';
+import { UsersService } from '../users/users.service';
 import { LimitExceededException } from '../limits/limit-exceeded.exception';
 import { ProviderException } from './providers/provider-error';
 import { AiRouterService } from './ai-router.service';
@@ -38,6 +40,8 @@ describe('AiRouterService', () => {
     addMessage: jest.Mock;
   };
   let files: { createFile: jest.Mock };
+  let byok: { decryptFor: jest.Mock; providersWithKeys: jest.Mock };
+  let users: { isAnonymous: jest.Mock };
 
   const makeProvider = (name: string) => ({
     name,
@@ -70,11 +74,19 @@ describe('AiRouterService', () => {
         })),
     };
 
+    byok = {
+      decryptFor: jest.fn().mockResolvedValue(undefined),
+      providersWithKeys: jest.fn().mockResolvedValue(new Set()),
+    };
+    users = { isAnonymous: jest.fn().mockResolvedValue(false) };
+
     service = new AiRouterService(
       openai as unknown as OpenAiService,
       anthropic as unknown as AnthropicService,
       chat as unknown as ChatService,
       files as unknown as FilesService,
+      byok as unknown as ByokService,
+      users as unknown as UsersService,
     );
   });
 
@@ -307,10 +319,10 @@ describe('AiRouterService', () => {
   });
 
   describe('listAvailableModels', () => {
-    it('reports availability from the provider key state', () => {
+    it('reports availability from the provider key state', async () => {
       openai.isConfigured.mockReturnValue(false);
 
-      const models = service.listAvailableModels();
+      const models = await service.listAvailableModels('u1');
       const gpt = models.find((m) => m.id === 'gpt-4o');
       const claude = models.find((m) => m.id === 'claude-opus-5');
 
@@ -318,10 +330,44 @@ describe('AiRouterService', () => {
       expect(claude?.available).toBe(true);
     });
 
-    it('labels the key source so the switcher can show it', () => {
-      expect(
-        service.listAvailableModels().every((m) => m.source === 'nutch'),
-      ).toBe(true);
+    it('labels models as running on the Nutch key by default', async () => {
+      const models = await service.listAvailableModels('u1');
+      expect(models.every((m) => m.source === 'nutch')).toBe(true);
+    });
+
+    it('labels a model as user-owned when a key is connected', async () => {
+      byok.providersWithKeys.mockResolvedValue(new Set(['anthropic']));
+
+      const models = await service.listAvailableModels('u1');
+
+      expect(models.find((m) => m.id === 'claude-opus-5')?.source).toBe('user');
+      expect(models.find((m) => m.id === 'gpt-4o')?.source).toBe('nutch');
+    });
+
+    it('makes a model available on a connected key even with no Nutch key', async () => {
+      openai.isConfigured.mockReturnValue(false);
+      byok.providersWithKeys.mockResolvedValue(new Set(['openai']));
+
+      const models = await service.listAvailableModels('u1');
+
+      expect(models.find((m) => m.id === 'gpt-4o')?.available).toBe(true);
+    });
+
+    it('locks every non-default model for an anonymous user', async () => {
+      users.isAnonymous.mockResolvedValue(true);
+
+      const models = await service.listAvailableModels('u1');
+
+      expect(models.find((m) => m.id === 'claude-opus-5')?.locked).toBe(false);
+      expect(models.filter((m) => m.locked).length).toBe(models.length - 1);
+    });
+
+    it('ignores connected keys for an anonymous user', async () => {
+      users.isAnonymous.mockResolvedValue(true);
+
+      await service.listAvailableModels('u1');
+
+      expect(byok.providersWithKeys).not.toHaveBeenCalled();
     });
   });
 
@@ -467,6 +513,73 @@ describe('AiRouterService', () => {
         (c) => c[1] === 'assistant',
       );
       expect(assistant?.[2]).toBe('partial answer');
+    });
+  });
+
+  describe('BYOK routing', () => {
+    it('passes a connected key to the provider', async () => {
+      byok.decryptFor.mockResolvedValue('sk-ant-user-key');
+
+      const result = await service.processPrompt(basePrompt(), 'u1');
+
+      const [params] = anthropic.generate.mock.calls[0];
+      expect(params.apiKey).toBe('sk-ant-user-key');
+      expect(result.key_source).toBe('user');
+    });
+
+    it('falls back to the Nutch key when none is connected', async () => {
+      const result = await service.processPrompt(basePrompt(), 'u1');
+
+      const [params] = anthropic.generate.mock.calls[0];
+      expect(params.apiKey).toBeUndefined();
+      expect(result.key_source).toBe('nutch');
+    });
+
+    it('looks up the key for the resolved provider only', async () => {
+      await service.processPrompt(basePrompt({ model: 'gpt-4o' }), 'u1');
+
+      expect(byok.decryptFor).toHaveBeenCalledWith('u1', 'openai');
+    });
+
+    it('never consults BYOK for an anonymous user', async () => {
+      users.isAnonymous.mockResolvedValue(true);
+
+      await service.processPrompt(basePrompt(), 'u1');
+
+      expect(byok.decryptFor).not.toHaveBeenCalled();
+    });
+
+    it('serves a model that only the connected key can reach', async () => {
+      anthropic.isConfigured.mockImplementation((key?: string) => Boolean(key));
+      byok.decryptFor.mockResolvedValue('sk-ant-user-key');
+
+      await expect(
+        service.processPrompt(basePrompt(), 'u1'),
+      ).resolves.toMatchObject({ key_source: 'user' });
+    });
+  });
+
+  describe('model switching gate', () => {
+    it('refuses a non-default model for an anonymous user', async () => {
+      users.isAnonymous.mockResolvedValue(true);
+
+      await expect(
+        service.processPrompt(basePrompt({ model: 'gpt-4o' }), 'u1'),
+      ).rejects.toThrow(/Sign in to switch models/);
+    });
+
+    it('allows the default model for an anonymous user', async () => {
+      users.isAnonymous.mockResolvedValue(true);
+
+      await expect(
+        service.processPrompt(basePrompt({ model: 'claude-opus-5' }), 'u1'),
+      ).resolves.toBeDefined();
+    });
+
+    it('allows any model for a signed-in user', async () => {
+      await expect(
+        service.processPrompt(basePrompt({ model: 'gpt-4o' }), 'u1'),
+      ).resolves.toBeDefined();
     });
   });
 });
