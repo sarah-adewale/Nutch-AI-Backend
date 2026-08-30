@@ -14,6 +14,8 @@ export interface ErrorBody {
   error: string;
   path: string;
   timestamp: string;
+  /** Extra fields carried by richer exceptions, e.g. limit details. */
+  [key: string]: unknown;
 }
 
 /** Prisma error codes we can map onto a meaningful status. */
@@ -51,7 +53,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
 
-    const { status, message, error } = this.resolve(exception);
+    const { status, message, error, extra } = this.resolve(exception);
 
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
@@ -61,6 +63,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     }
 
     const body: ErrorBody = {
+      ...extra,
       statusCode: status,
       message,
       error,
@@ -75,6 +78,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     status: number;
     message: string | string[];
     error: string;
+    extra?: Record<string, unknown>;
   } {
     if (exception instanceof HttpException) {
       const status = exception.getStatus();
@@ -82,11 +86,20 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
       // ValidationPipe returns { message: string[], error, statusCode }.
       if (typeof payload === 'object' && payload !== null) {
-        const shaped = payload as Partial<ErrorBody>;
+        const shaped = payload as Record<string, unknown>;
+
+        // Anything the exception added beyond the standard trio is preserved,
+        // so structured errors (limit details, for one) keep their detail.
+        const extra = { ...shaped };
+        delete extra.message;
+        delete extra.error;
+        delete extra.statusCode;
+
         return {
           status,
-          message: shaped.message ?? exception.message,
-          error: shaped.error ?? HttpStatus[status] ?? 'Error',
+          message: (shaped.message as string | string[]) ?? exception.message,
+          error: (shaped.error as string) ?? HttpStatus[status] ?? 'Error',
+          extra,
         };
       }
 

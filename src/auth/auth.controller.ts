@@ -1,13 +1,25 @@
-import { Controller, Get, Post, UseGuards, Req, Res } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Post,
+  Req,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
+import { AuthGuard as PassportGuard } from '@nestjs/passport';
 import { AuthGuard } from '@nestjs/passport';
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
   ApiExcludeEndpoint,
+  ApiBearerAuth,
 } from '@nestjs/swagger';
 import { Request, Response } from 'express';
-import { AuthService } from './auth.service';
+import { AuthService, AuthUser } from './auth.service';
+import { MigrateAnonymousDto } from './dto/migrate-anonymous.dto';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 @ApiTags('auth')
 @Controller('auth')
@@ -77,5 +89,39 @@ export class AuthController {
   })
   async createAnonymousSession() {
     return this.authService.createAnonymousUser();
+  }
+
+  @Post('migrate-anonymous')
+  @UseGuards(PassportGuard('jwt'))
+  @ApiBearerAuth('JWT-auth')
+  @ApiOperation({
+    summary: 'Move an anonymous session onto the signed-in account',
+    description:
+      'Call after signing in, with the anonymous token held beforehand. Its chat sessions and files transfer to the authenticated account and the anonymous user is removed.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: 'Migration completed',
+    schema: {
+      type: 'object',
+      properties: {
+        migratedSessions: { type: 'number', example: 3 },
+        migratedFiles: { type: 'number', example: 2 },
+      },
+    },
+  })
+  @ApiResponse({ status: 400, description: 'Invalid or unusable token' })
+  @ApiResponse({
+    status: 403,
+    description: 'Token does not belong to an anonymous account',
+  })
+  async migrateAnonymous(
+    @Body() dto: MigrateAnonymousDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.authService.migrateAnonymousAccount(
+      user.id,
+      dto.anonymous_token,
+    );
   }
 }

@@ -1,5 +1,6 @@
 import { NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../database/prisma.service';
+import { LimitsService } from '../limits/limits.service';
 import { ChatService } from './chat.service';
 
 describe('ChatService', () => {
@@ -7,16 +8,19 @@ describe('ChatService', () => {
   let prisma: {
     chatSession: {
       findFirst: jest.Mock;
+      create: jest.Mock;
       delete: jest.Mock;
       findMany: jest.Mock;
     };
     message: { create: jest.Mock; findMany: jest.Mock };
   };
+  let limits: { assertCanCreate: jest.Mock };
 
   beforeEach(() => {
     prisma = {
       chatSession: {
         findFirst: jest.fn(),
+        create: jest.fn().mockResolvedValue({ id: 's1' }),
         delete: jest.fn().mockResolvedValue({}),
         findMany: jest.fn().mockResolvedValue([]),
       },
@@ -25,7 +29,11 @@ describe('ChatService', () => {
         findMany: jest.fn().mockResolvedValue([]),
       },
     };
-    service = new ChatService(prisma as unknown as PrismaService);
+    limits = { assertCanCreate: jest.fn().mockResolvedValue(undefined) };
+    service = new ChatService(
+      prisma as unknown as PrismaService,
+      limits as unknown as LimitsService,
+    );
   });
 
   describe('deleteChatSession', () => {
@@ -121,6 +129,129 @@ describe('ChatService', () => {
           modelUsed: 'gpt-4',
         },
       });
+    });
+  });
+
+  describe('createChatSession', () => {
+    it('checks the session quota before creating', async () => {
+      limits.assertCanCreate.mockRejectedValue(new Error('at the cap'));
+
+      await expect(
+        service.createChatSession('u1', 'claude-opus-5', 'title'),
+      ).rejects.toThrow('at the cap');
+      expect(prisma.chatSession.create).not.toHaveBeenCalled();
+    });
+
+    it('checks the chat_sessions resource specifically', async () => {
+      await service.createChatSession('u1', 'claude-opus-5');
+      expect(limits.assertCanCreate).toHaveBeenCalledWith(
+        'u1',
+        'chat_sessions',
+      );
+    });
+  });
+
+  describe('getUserChatSessions pagination', () => {
+    const page = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `s${i}`,
+        _count: { messages: 4 },
+        messages: [{ id: `m${i}`, content: 'last' }],
+      }));
+
+    it('does not load every message of every session', async () => {
+      prisma.chatSession.findMany.mockResolvedValue(page(2));
+
+      await service.getUserChatSessions('u1');
+
+      const [args] = prisma.chatSession.findMany.mock.calls[0];
+      expect(args.include.messages.take).toBe(1);
+      expect(args.include._count).toEqual({ select: { messages: true } });
+    });
+
+    it('returns a message count and last message per session', async () => {
+      prisma.chatSession.findMany.mockResolvedValue(page(1));
+
+      const result = await service.getUserChatSessions('u1');
+
+      expect(result.sessions[0].messageCount).toBe(4);
+      expect(result.sessions[0].lastMessage).toEqual({
+        id: 'm0',
+        content: 'last',
+      });
+    });
+
+    it('reports no next cursor when the page is not full', async () => {
+      prisma.chatSession.findMany.mockResolvedValue(page(3));
+
+      const result = await service.getUserChatSessions('u1', { limit: 5 });
+
+      expect(result.nextCursor).toBeNull();
+      expect(result.sessions).toHaveLength(3);
+    });
+
+    it('trims the lookahead row and returns a cursor when there is more', async () => {
+      prisma.chatSession.findMany.mockResolvedValue(page(3));
+
+      const result = await service.getUserChatSessions('u1', { limit: 2 });
+
+      expect(result.sessions).toHaveLength(2);
+      expect(result.nextCursor).toBe('s1');
+    });
+
+    it('fetches one extra row to detect a further page', async () => {
+      prisma.chatSession.findMany.mockResolvedValue([]);
+
+      await service.getUserChatSessions('u1', { limit: 10 });
+
+      expect(prisma.chatSession.findMany.mock.calls[0][0].take).toBe(11);
+    });
+
+    it('skips the cursor row itself when continuing', async () => {
+      prisma.chatSession.findMany.mockResolvedValue([]);
+
+      await service.getUserChatSessions('u1', { cursor: 's9' });
+
+      const [args] = prisma.chatSession.findMany.mock.calls[0];
+      expect(args.cursor).toEqual({ id: 's9' });
+      expect(args.skip).toBe(1);
+    });
+
+    it('clamps an absurd page size', async () => {
+      prisma.chatSession.findMany.mockResolvedValue([]);
+
+      await service.getUserChatSessions('u1', { limit: 100000 });
+
+      expect(prisma.chatSession.findMany.mock.calls[0][0].take).toBe(101);
+    });
+
+    it.each([0, -5])(
+      'falls back to the default for a limit of %s',
+      async (limit) => {
+        prisma.chatSession.findMany.mockResolvedValue([]);
+
+        await service.getUserChatSessions('u1', { limit });
+
+        expect(prisma.chatSession.findMany.mock.calls[0][0].take).toBe(21);
+      },
+    );
+
+    it('falls back to the default for a non-numeric limit', async () => {
+      prisma.chatSession.findMany.mockResolvedValue([]);
+
+      await service.getUserChatSessions('u1', {
+        limit: Number('abc'),
+      });
+
+      expect(prisma.chatSession.findMany.mock.calls[0][0].take).toBe(21);
+    });
+
+    it('truncates a fractional limit', async () => {
+      prisma.chatSession.findMany.mockResolvedValue([]);
+
+      await service.getUserChatSessions('u1', { limit: 7.8 });
+
+      expect(prisma.chatSession.findMany.mock.calls[0][0].take).toBe(8);
     });
   });
 });
