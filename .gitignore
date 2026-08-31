@@ -11,3 +11,6 @@ dist
 
 # Local npm cache/logs (accidentally committed)
 tmp-npm-cache
+
+# macOS
+.DS_Store

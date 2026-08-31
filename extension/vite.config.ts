@@ -1,8 +1,13 @@
 /**
- * Vitest configuration. The extension itself is built by scripts/build.mjs,
- * which needs three different output formats and so drives Vite's API directly.
+ * Vitest configuration.
+ *
+ * `defineConfig` is imported from `vitest/config`, not `vite`: Vite's own
+ * `UserConfig` has no `test` property, so the plain import type-errors.
+ *
+ * The extension itself is built by scripts/build.mjs, which needs three
+ * different output formats and so drives Vite's API directly.
  */
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
