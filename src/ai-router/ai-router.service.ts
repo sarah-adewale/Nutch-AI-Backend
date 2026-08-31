@@ -8,8 +8,10 @@ import { ChatService } from '../chat/chat.service';
 import { FilesService } from '../files/files.service';
 import { ByokService } from '../byok/byok.service';
 import { UsersService } from '../users/users.service';
+import { UsageService } from '../limits/usage.service';
 import { LimitExceededException } from '../limits/limit-exceeded.exception';
 import { extractArtifacts, slugForPrompt } from './artifacts';
+import { RedirectDecision, findRedirect } from './redirect-rules';
 import { PromptRequestDto } from './dto/prompt-request.dto';
 import { AiResponseDto } from './dto/ai-response.dto';
 import { AnthropicService } from './providers/anthropic.service';
@@ -41,6 +43,7 @@ interface ResolvedRequest {
   provider: AiProvider;
   params: GenerateParams;
   keySource: KeySource;
+  isAnonymous: boolean;
 }
 
 @Injectable()
@@ -54,6 +57,7 @@ export class AiRouterService {
     private filesService: FilesService,
     private byokService: ByokService,
     private usersService: UsersService,
+    private usageService: UsageService,
   ) {
     this.providers = { openai, anthropic };
   }
@@ -91,19 +95,34 @@ export class AiRouterService {
     request: PromptRequestDto,
     userId: string,
   ): Promise<
-    AiResponseDto & {
-      session_id: string;
-      key_source: KeySource;
-      files: Array<{
-        id: string;
-        filename: string;
-        folder: string;
-        fileType: string;
-      }>;
-      storage_limit_reached: boolean;
-    }
+    | RedirectDecision
+    | (AiResponseDto & {
+        session_id: string;
+        key_source: KeySource;
+        files: Array<{
+          id: string;
+          filename: string;
+          folder: string;
+          fileType: string;
+        }>;
+        storage_limit_reached: boolean;
+      })
   > {
     const resolved = await this.resolve(request, userId);
+
+    // Checked before any session is created: a redirect produces no answer, and
+    // an anonymous user only gets three sessions.
+    const redirect = findRedirect(
+      request.prompt,
+      resolved.definition.capabilities,
+    );
+    if (redirect) return redirect;
+
+    // Only prompts served on the shared key count against the daily quota.
+    if (resolved.keySource === 'nutch') {
+      this.usageService.consume(userId, resolved.isAnonymous);
+    }
+
     const sessionId = await this.resolveSession(request, userId, resolved);
 
     await this.recordUserMessage(sessionId, request, resolved);
@@ -195,10 +214,26 @@ export class AiRouterService {
     request: PromptRequestDto,
     userId: string,
   ): AsyncGenerator<
-    { type: 'session'; sessionId: string } | { type: 'delta'; text: string },
+    | { type: 'session'; sessionId: string }
+    | { type: 'delta'; text: string }
+    | { type: 'redirect'; redirect: RedirectDecision },
     void
   > {
     const resolved = await this.resolve(request, userId);
+
+    const redirect = findRedirect(
+      request.prompt,
+      resolved.definition.capabilities,
+    );
+    if (redirect) {
+      yield { type: 'redirect', redirect };
+      return;
+    }
+
+    if (resolved.keySource === 'nutch') {
+      this.usageService.consume(userId, resolved.isAnonymous);
+    }
+
     const sessionId = await this.resolveSession(request, userId, resolved);
 
     await this.recordUserMessage(sessionId, request, resolved);
@@ -304,6 +339,7 @@ export class AiRouterService {
       definition,
       provider,
       keySource: userKey ? 'user' : 'nutch',
+      isAnonymous,
       params: {
         model: definition.id,
         prompt: request.prompt,
