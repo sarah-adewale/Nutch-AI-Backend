@@ -1,99 +1,125 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Nutch
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+A browser-native AI assistant. Highlight anything on a page — text, code, an image — and ask a question about it without leaving the tab.
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://coveralls.io/github/nestjs/nest?branch=master" target="_blank"><img src="https://coveralls.io/repos/github/nestjs/nest/badge.svg?branch=master#9" alt="Coverage" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+This repository holds both halves of the product:
 
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ npm install
+```
+src/          NestJS API: auth, AI routing, chat history, files, BYOK
+extension/    Chrome extension (MV3): the sidebar users actually see
+prisma/       Database schema and migrations
+docs/         Architecture decisions and deployment
 ```
 
-## Compile and run the project
+They live together because they share one contract. The extension branches on error codes (`LIMIT_REACHED`, `DAILY_QUOTA_REACHED`, `PROVIDER_ERROR`), reads response fields like `key_source` and `storage_limit_reached`, and consumes a named SSE event stream. Keeping both sides in one repository means adding a field and consuming it is a single change rather than two repositories drifting apart.
+
+The two halves build, test and deploy independently. Nothing in `extension/` is part of the API's Docker image, and the API's test and lint commands do not reach into `extension/`.
+
+---
+
+## Running the API
+
+**Requirements:** Node 20+, PostgreSQL 15+.
 
 ```bash
-# development
-$ npm run start
-
-# watch mode
-$ npm run start:dev
-
-# production mode
-$ npm run start:prod
+npm install
+cp .env.example .env          # then fill in the values below
+npx prisma migrate deploy     # create the tables
+npm run start:dev
 ```
 
-## Run tests
+Swagger UI: <http://localhost:3100/api/docs>
+
+### Configuration
+
+`.env.example` documents every setting. Three matter before anything works:
+
+| Variable | Notes |
+| --- | --- |
+| `DATABASE_URL` | PostgreSQL connection string |
+| `JWT_SECRET` | Any long random string |
+| `ENCRYPTION_KEY` | 64 hex characters — protects BYOK keys and file bodies |
+
+Generate the secrets with:
 
 ```bash
-# unit tests
-$ npm run test
-
-# e2e tests
-$ npm run test:e2e
-
-# test coverage
-$ npm run test:cov
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-## Deployment
+A provider key (`ANTHROPIC_API_KEY` or `OPENAI_API_KEY`) is needed for prompts to return answers. Without one, the API reports which models are unavailable rather than failing at request time.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+> **Note:** npm 11 does not run install scripts by default, so Prisma's client is not generated automatically. Run `npx prisma generate` after installing, or approve once with `npm install-scripts approve @prisma/client prisma @prisma/engines`.
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+### Commands
 
-```bash
-$ npm install -g mau
-$ mau deploy
+| | |
+| --- | --- |
+| `npm run start:dev` | Development server with reload |
+| `npm run build` | Compile to `dist/` |
+| `npm test` | Unit tests |
+| `npm run test:e2e` | End-to-end tests (needs a database) |
+| `npm run test:cov` | Coverage |
+| `npm run lint` | ESLint with `--fix` |
+| `npx prisma studio` | Browse the database |
+
+---
+
+## Running the extension
+
+See [`extension/README.md`](extension/README.md). In short: `cd extension && npm install && npm run dev`, then load `extension/dist` as an unpacked extension at `chrome://extensions`.
+
+The extension needs the API running, and the API needs the extension's origin in `CORS_ORIGIN`:
+
+```
+CORS_ORIGIN="http://localhost:3100,chrome-extension://*"
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+---
 
-## Resources
+## API
 
-Check out a few resources that may come in handy when working with NestJS:
+Everything is under `/api/v1`. Full request and response shapes are in Swagger.
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+**Auth** — `POST /auth/anonymous` · `GET /auth/google` · `GET /auth/github` · `POST /auth/magic-link` · `POST /auth/magic-link/verify` · `POST /auth/migrate-anonymous`
 
-## Support
+**AI** — `GET /ai/models` · `POST /ai/prompt` · `POST /ai/prompt/stream` (SSE)
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+**Chat** — `GET /chat/sessions` · `GET /chat/sessions/:id` · `DELETE /chat/sessions/:id` · `GET /chat/search`
 
-## Stay in touch
+**Files** — `GET /files` · `GET /files/:id/download` · `DELETE /files/:id`
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+**BYOK** — `GET /byok` · `POST /byok` · `DELETE /byok/:provider`
 
-## License
+**Other** — `GET /users/profile` · `GET /health`
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+### Two things a client must handle
+
+**Streaming.** `POST /ai/prompt/stream` returns server-sent events: `session`, then `delta` per chunk, then `done`. A failure arrives as an `error` event rather than a status code, because the headers are already sent by then. A request that should go elsewhere arrives as a single `redirect` event.
+
+**Structured errors.** Beyond the status code, the body carries a machine-readable `error` field so the UI can respond specifically:
+
+| Code | Status | Means |
+| --- | --- | --- |
+| `LIMIT_REACHED` | 403 | Anonymous storage cap hit; sign in |
+| `DAILY_QUOTA_REACHED` | 429 | Daily prompt ceiling on the shared key; connect a key |
+| `PROVIDER_ERROR` | 402/429/502 | Upstream problem; `failure` says which |
+
+---
+
+## User tiers
+
+| | Anonymous | Signed in |
+| --- | --- | --- |
+| Chat sessions | 3 | Unlimited |
+| Stored files | 5 | Unlimited |
+| Model switching | No | Yes |
+| Bring your own key | No | Yes |
+
+Signing in migrates an anonymous session's work onto the account rather than discarding it.
+
+---
+
+## Further reading
+
+- [`docs/adr-001-encryption-at-rest.md`](docs/adr-001-encryption-at-rest.md) — why messages are encrypted at the storage layer while files and API keys are encrypted in the application
+- [`docs/deployment.md`](docs/deployment.md) — required configuration, container, and what is not production ready yet

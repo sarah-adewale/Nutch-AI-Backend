@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Nutch",
+  "version": "0.1.0",
+  "description": "Ask AI about anything you highlight, without leaving the page.",
+  "minimum_chrome_version": "116",
+
+  "//permissions": "activeTab plus scripting means the content script is injected only when the user invokes Nutch, so installing does not ask to read every site. A static content_scripts entry on <all_urls> would.",
+  "permissions": ["activeTab", "scripting", "storage", "sidePanel", "contextMenus"],
+
+  "//host_permissions": "Only the API. Page access comes from activeTab on a user gesture.",
+  "host_permissions": ["http://localhost:3100/*"],
+
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "action": {
+    "default_title": "Open Nutch"
+  },
+  "commands": {
+    "open-nutch": {
+      "suggested_key": { "default": "Ctrl+Shift+U", "mac": "Command+Shift+U" },
+      "description": "Ask Nutch about the current selection"
+    }
+  }
+}
