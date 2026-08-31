@@ -55,10 +55,26 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const { status, message, error, extra } = this.resolve(exception);
 
+    // 5xx carries a stack; 4xx is logged as one line so a client's bad request
+    // is visible without burying genuine faults in noise.
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
-        `${request.method} ${request.url} -> ${status}`,
+        JSON.stringify({
+          method: request.method,
+          path: request.url,
+          status,
+          error,
+        }),
         exception instanceof Error ? exception.stack : String(exception),
+      );
+    } else if (status >= HttpStatus.BAD_REQUEST) {
+      this.logger.warn(
+        JSON.stringify({
+          method: request.method,
+          path: request.url,
+          status,
+          error,
+        }),
       );
     }
 

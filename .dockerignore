@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.env
+.env.*
+tmp-npm-cache
+coverage
+docs
+test
+**/*.spec.ts

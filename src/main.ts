@@ -1,14 +1,36 @@
 import { NestFactory } from '@nestjs/core';
-import { ValidationPipe } from '@nestjs/common';
+import { Logger, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import helmet from 'helmet';
 import { AppModule } from './app.module';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { createCorsOriginHandler, parseCorsOrigins } from './common/cors';
+import { fatalIssues, validateConfig } from './common/config-validation';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const logger = new Logger('Bootstrap');
+
+  // Checked before the app is built: a placeholder JWT_SECRET in production is
+  // forgeable, and failing to start is safer than serving with it.
+  const blocking = fatalIssues(process.env);
+  if (blocking.length > 0) {
+    for (const issue of blocking) {
+      logger.error(`${issue.key} ${issue.problem}`);
+    }
+    throw new Error('Refusing to start with invalid configuration');
+  }
+  for (const issue of validateConfig(process.env)) {
+    logger.warn(`${issue.key} ${issue.problem}`);
+  }
+
+  const app = await NestFactory.create(AppModule, {
+    // Timestamps make the interleaved request logs readable in a deploy tail.
+    logger:
+      process.env.NODE_ENV === 'production'
+        ? ['error', 'warn', 'log']
+        : ['error', 'warn', 'log', 'debug'],
+  });
 
   // Security
   app.use(helmet());
@@ -76,10 +98,8 @@ async function bootstrap() {
   const port = configService.get<number>('PORT', 3000);
 
   await app.listen(port);
-  console.log(`🚀 Nutch AI Backend running on port ${port}`);
-  console.log(
-    `📚 Swagger documentation available at http://localhost:${port}/api/docs`,
-  );
+  logger.log(`Nutch AI Backend listening on port ${port}`);
+  logger.log(`Swagger documentation at http://localhost:${port}/api/docs`);
 }
 
 bootstrap();

@@ -25,8 +25,9 @@ describe('AllExceptionsFilter', () => {
       }),
     } as unknown as ArgumentsHost;
 
-    // The filter logs 5xx stacks; keep test output readable.
+    // The filter logs 5xx stacks and 4xx one-liners; keep test output readable.
     jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
   });
 
   afterEach(() => jest.restoreAllMocks());
@@ -106,5 +107,39 @@ describe('AllExceptionsFilter', () => {
         timestamp: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
       }),
     );
+  });
+
+  describe('logging', () => {
+    it('logs a 5xx with its stack', () => {
+      const error = jest.spyOn(Logger.prototype, 'error');
+
+      filter.catch(new Error('boom'), host);
+
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error.mock.calls[0][0]).toContain('"status":500');
+    });
+
+    it('logs a 4xx as a single warning, without a stack', () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn');
+      const error = jest.spyOn(Logger.prototype, 'error');
+
+      filter.catch(new NotFoundException('nope'), host);
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(error).not.toHaveBeenCalled();
+    });
+
+    it('logs the method and path so a failure can be traced', () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn');
+
+      filter.catch(new NotFoundException(), host);
+
+      const logged = JSON.parse(warn.mock.calls[0][0] as string);
+      expect(logged).toMatchObject({
+        method: 'DELETE',
+        path: '/api/v1/files/abc',
+        status: 404,
+      });
+    });
   });
 });
