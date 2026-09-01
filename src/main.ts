@@ -50,6 +50,7 @@ async function bootstrap() {
     .addTag('chat', 'Chat history endpoints')
     .addTag('files', 'File management endpoints')
     .addTag('health', 'Service health endpoints')
+    .addTag('byok', 'Bring your own key endpoints')
     .addBearerAuth(
       {
         type: 'http',

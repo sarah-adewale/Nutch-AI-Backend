@@ -19,9 +19,17 @@ const STATUS: Record<ProviderFailure, number> = {
   unavailable: HttpStatus.BAD_GATEWAY,
 };
 
+export type KeyOwner = 'nutch' | 'user';
+
+/** The quota message depends on whose key ran out; the rest do not. */
+function quotaMessage(owner: KeyOwner): string {
+  return owner === 'user'
+    ? 'Your connected API key has no remaining credit. Top up the balance with your provider.'
+    : 'The shared account for this model has no remaining credit. Connect your own API key to keep going.';
+}
+
 const MESSAGE: Record<ProviderFailure, string> = {
-  quota_exhausted:
-    'The account behind this model has no remaining credit. Connect your own API key or top up the balance.',
+  quota_exhausted: '',
   auth_failed: 'The upstream provider rejected our credentials.',
   rate_limited:
     'The upstream provider is rate limiting requests. Try again shortly.',
@@ -34,11 +42,15 @@ export class ProviderException extends HttpException {
     provider: ProviderName,
     failure: ProviderFailure,
     detail?: string,
+    keyOwner: KeyOwner = 'nutch',
   ) {
     super(
       {
         error: 'PROVIDER_ERROR',
-        message: MESSAGE[failure],
+        message:
+          failure === 'quota_exhausted'
+            ? quotaMessage(keyOwner)
+            : MESSAGE[failure],
         provider,
         failure,
         ...(detail ? { detail } : {}),

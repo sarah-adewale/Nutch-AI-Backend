@@ -29,6 +29,13 @@ export interface AiProvider {
   /** False when no key is available, so the router can answer 503 rather than fail mid-call. */
   isConfigured(apiKey?: string): boolean;
 
+  /**
+   * Checks a key against the provider without spending anything. Both SDKs
+   * expose a models listing, which authenticates but does not run inference,
+   * so an unfunded-but-valid key still passes.
+   */
+  validateKey(apiKey: string): Promise<boolean>;
+
   generate(params: GenerateParams): Promise<AiCompletion>;
 
   /** Yields text deltas as they arrive. */

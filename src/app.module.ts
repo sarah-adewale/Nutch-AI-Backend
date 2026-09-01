@@ -12,6 +12,7 @@ import { FilesModule } from './files/files.module';
 import { EncryptionModule } from './encryption/encryption.module';
 import { HealthModule } from './health/health.module';
 import { LimitsModule } from './limits/limits.module';
+import { ByokModule } from './byok/byok.module';
 
 @Module({
   imports: [
@@ -35,6 +36,7 @@ import { LimitsModule } from './limits/limits.module';
     EncryptionModule,
     HealthModule,
     LimitsModule,
+    ByokModule,
   ],
   controllers: [AppController],
   providers: [AppService],
