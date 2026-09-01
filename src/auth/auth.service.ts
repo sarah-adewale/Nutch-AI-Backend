@@ -43,6 +43,22 @@ export class AuthService {
     };
   }
 
+  /** Signs in the address a consumed magic-link token belongs to. */
+  async loginWithEmail(email: string) {
+    const existing = await this.usersService.findByEmail(email);
+    const user =
+      existing ??
+      (await this.usersService.create({ email, authProvider: 'email' }));
+
+    const payload: AuthUser = {
+      id: user.id,
+      email: user.email,
+      authProvider: user.authProvider,
+    };
+
+    return { access_token: this.jwtService.sign(payload), user: payload };
+  }
+
   async createAnonymousUser() {
     const user = await this.usersService.create({
       authProvider: null,

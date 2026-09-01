@@ -6,6 +6,7 @@ import { ChatService } from '../chat/chat.service';
 import { FilesService } from '../files/files.service';
 import { ByokService } from '../byok/byok.service';
 import { UsersService } from '../users/users.service';
+import { UsageService } from '../limits/usage.service';
 import { LimitExceededException } from '../limits/limit-exceeded.exception';
 import { ProviderException } from './providers/provider-error';
 import { AiRouterService } from './ai-router.service';
@@ -20,6 +21,16 @@ const basePrompt = (over: Partial<PromptRequestDto> = {}): PromptRequestDto =>
     prompt: 'Explain this function',
     ...over,
   }) as PromptRequestDto;
+
+type PromptResult = Awaited<ReturnType<AiRouterService['processPrompt']>>;
+
+/** Narrows away the redirect branch for tests that expect a model answer. */
+function asAnswer(result: PromptResult) {
+  if ('redirect' in result) {
+    throw new Error('expected a model answer but got a redirect');
+  }
+  return result;
+}
 
 async function* textStream(...chunks: string[]) {
   for (const chunk of chunks) yield chunk;
@@ -42,6 +53,7 @@ describe('AiRouterService', () => {
   let files: { createFile: jest.Mock };
   let byok: { decryptFor: jest.Mock; providersWithKeys: jest.Mock };
   let users: { isAnonymous: jest.Mock };
+  let usage: { consume: jest.Mock };
 
   const makeProvider = (name: string) => ({
     name,
@@ -80,6 +92,8 @@ describe('AiRouterService', () => {
     };
     users = { isAnonymous: jest.fn().mockResolvedValue(false) };
 
+    usage = { consume: jest.fn() };
+
     service = new AiRouterService(
       openai as unknown as OpenAiService,
       anthropic as unknown as AnthropicService,
@@ -87,6 +101,7 @@ describe('AiRouterService', () => {
       files as unknown as FilesService,
       byok as unknown as ByokService,
       users as unknown as UsersService,
+      usage as unknown as UsageService,
     );
   });
 
@@ -181,7 +196,7 @@ describe('AiRouterService', () => {
 
   describe('session handling', () => {
     it('creates a session when none is supplied', async () => {
-      const result = await service.processPrompt(basePrompt(), 'u1');
+      const result = asAnswer(await service.processPrompt(basePrompt(), 'u1'));
 
       expect(chat.createChatSession).toHaveBeenCalledWith(
         'u1',
@@ -192,9 +207,11 @@ describe('AiRouterService', () => {
     });
 
     it('continues an existing session, scoped to the owner', async () => {
-      const result = await service.processPrompt(
-        basePrompt({ session_id: 'existing' }),
-        'u1',
+      const result = asAnswer(
+        await service.processPrompt(
+          basePrompt({ session_id: 'existing' }),
+          'u1',
+        ),
       );
 
       expect(chat.getChatSession).toHaveBeenCalledWith('existing', 'u1');
@@ -384,7 +401,7 @@ describe('AiRouterService', () => {
         'Here:\n```typescript\nexport const add = (a, b) => a + b;\n```',
       );
 
-      const result = await service.processPrompt(basePrompt(), 'u1');
+      const result = asAnswer(await service.processPrompt(basePrompt(), 'u1'));
 
       expect(files.createFile).toHaveBeenCalledTimes(1);
       expect(result.files[0].folder).toBe('/code');
@@ -394,7 +411,7 @@ describe('AiRouterService', () => {
     it('saves nothing for a prose-only answer', async () => {
       withCode('Just an explanation, no code at all here.');
 
-      const result = await service.processPrompt(basePrompt(), 'u1');
+      const result = asAnswer(await service.processPrompt(basePrompt(), 'u1'));
 
       expect(files.createFile).not.toHaveBeenCalled();
       expect(result.files).toEqual([]);
@@ -419,7 +436,7 @@ describe('AiRouterService', () => {
         new LimitExceededException('files', 5, 5),
       );
 
-      const result = await service.processPrompt(basePrompt(), 'u1');
+      const result = asAnswer(await service.processPrompt(basePrompt(), 'u1'));
 
       // The completion is already paid for; failing the request would waste it.
       expect(result.response).toContain('export const add');
@@ -520,7 +537,7 @@ describe('AiRouterService', () => {
     it('passes a connected key to the provider', async () => {
       byok.decryptFor.mockResolvedValue('sk-ant-user-key');
 
-      const result = await service.processPrompt(basePrompt(), 'u1');
+      const result = asAnswer(await service.processPrompt(basePrompt(), 'u1'));
 
       const [params] = anthropic.generate.mock.calls[0];
       expect(params.apiKey).toBe('sk-ant-user-key');
@@ -528,7 +545,7 @@ describe('AiRouterService', () => {
     });
 
     it('falls back to the Nutch key when none is connected', async () => {
-      const result = await service.processPrompt(basePrompt(), 'u1');
+      const result = asAnswer(await service.processPrompt(basePrompt(), 'u1'));
 
       const [params] = anthropic.generate.mock.calls[0];
       expect(params.apiKey).toBeUndefined();
@@ -580,6 +597,109 @@ describe('AiRouterService', () => {
       await expect(
         service.processPrompt(basePrompt({ model: 'gpt-4o' }), 'u1'),
       ).resolves.toBeDefined();
+    });
+  });
+
+  describe('smart redirection', () => {
+    const imagePrompt = basePrompt({
+      prompt: 'Generate an image of a fox in a forest',
+    });
+
+    it('returns a redirect instead of calling the model', async () => {
+      const result = await service.processPrompt(imagePrompt, 'u1');
+
+      expect(result).toMatchObject({
+        redirect: true,
+        tool: 'Midjourney',
+        pre_fill: 'a fox in a forest',
+      });
+      expect(anthropic.generate).not.toHaveBeenCalled();
+    });
+
+    it('does not burn a chat session on a redirect', async () => {
+      // An anonymous user only gets three, and a redirect produces no answer.
+      await service.processPrompt(imagePrompt, 'u1');
+
+      expect(chat.createChatSession).not.toHaveBeenCalled();
+      expect(chat.addMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not redirect an ordinary prompt', async () => {
+      const result = await service.processPrompt(basePrompt(), 'u1');
+
+      expect(result).not.toHaveProperty('redirect');
+      expect(anthropic.generate).toHaveBeenCalled();
+    });
+
+    it('still enforces the model gate before redirecting', async () => {
+      users.isAnonymous.mockResolvedValue(true);
+
+      await expect(
+        service.processPrompt(
+          basePrompt({ model: 'gpt-4o', prompt: 'Draw a picture of a cat' }),
+          'u1',
+        ),
+      ).rejects.toThrow(/Sign in to switch models/);
+    });
+
+    it('emits a redirect event when streaming', async () => {
+      const events: unknown[] = [];
+      for await (const event of service.streamPrompt(imagePrompt, 'u1')) {
+        events.push(event);
+      }
+
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: 'redirect',
+        redirect: { tool: 'Midjourney' },
+      });
+      expect(anthropic.stream).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('daily usage quota', () => {
+    it('counts a prompt served on the shared key', async () => {
+      await service.processPrompt(basePrompt(), 'u1');
+
+      expect(usage.consume).toHaveBeenCalledWith('u1', false);
+    });
+
+    it('does not count a prompt served on the user\u2019s own key', async () => {
+      // Their key, their cost - capping it would make BYOK worse than not
+      // connecting one.
+      byok.decryptFor.mockResolvedValue('sk-ant-user-key');
+
+      await service.processPrompt(basePrompt(), 'u1');
+
+      expect(usage.consume).not.toHaveBeenCalled();
+    });
+
+    it('does not count a redirect, which never reaches a model', async () => {
+      await service.processPrompt(
+        basePrompt({ prompt: 'Generate an image of a fox' }),
+        'u1',
+      );
+
+      expect(usage.consume).not.toHaveBeenCalled();
+    });
+
+    it('checks the quota before creating a session', async () => {
+      usage.consume.mockImplementation(() => {
+        throw new Error('quota reached');
+      });
+
+      await expect(service.processPrompt(basePrompt(), 'u1')).rejects.toThrow(
+        'quota reached',
+      );
+      expect(chat.createChatSession).not.toHaveBeenCalled();
+    });
+
+    it('counts anonymous usage against the anonymous allowance', async () => {
+      users.isAnonymous.mockResolvedValue(true);
+
+      await service.processPrompt(basePrompt(), 'u1');
+
+      expect(usage.consume).toHaveBeenCalledWith('u1', true);
     });
   });
 });

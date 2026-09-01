@@ -2,6 +2,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   Post,
   Req,
   Res,
@@ -19,12 +21,17 @@ import {
 import { Request, Response } from 'express';
 import { AuthService, AuthUser } from './auth.service';
 import { MigrateAnonymousDto } from './dto/migrate-anonymous.dto';
+import { ConsumeMagicLinkDto, RequestMagicLinkDto } from './dto/magic-link.dto';
+import { MagicLinkService } from './magic-link/magic-link.service';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+    private magicLinkService: MagicLinkService,
+  ) {}
 
   @Get('google')
   @UseGuards(AuthGuard('google'))
@@ -89,6 +96,37 @@ export class AuthController {
   })
   async createAnonymousSession() {
     return this.authService.createAnonymousUser();
+  }
+
+  @Post('magic-link')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @ApiOperation({
+    summary: 'Request a sign-in link',
+    description:
+      'Emails a single-use link. Always returns 202, whether or not the address has an account, so the endpoint cannot be used to discover who is registered.',
+  })
+  @ApiResponse({
+    status: 202,
+    description: 'Link sent if the address is valid',
+  })
+  async requestMagicLink(@Body() dto: RequestMagicLinkDto) {
+    await this.magicLinkService.request(dto.email);
+    return {
+      message: 'If that address can receive mail, a link is on its way.',
+    };
+  }
+
+  @Post('magic-link/verify')
+  @ApiOperation({
+    summary: 'Exchange a sign-in link for a token',
+    description:
+      'Consumes the token from the emailed link and returns a JWT. Tokens are single use.',
+  })
+  @ApiResponse({ status: 201, description: 'Signed in' })
+  @ApiResponse({ status: 400, description: 'Link is invalid, expired or used' })
+  async verifyMagicLink(@Body() dto: ConsumeMagicLinkDto) {
+    const email = this.magicLinkService.consume(dto.token);
+    return this.authService.loginWithEmail(email);
   }
 
   @Post('migrate-anonymous')

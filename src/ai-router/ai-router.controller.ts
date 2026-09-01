@@ -96,6 +96,8 @@ export class AiRouterController {
       )) {
         if (chunk.type === 'session') {
           send('session', { session_id: chunk.sessionId });
+        } else if (chunk.type === 'redirect') {
+          send('redirect', chunk.redirect);
         } else {
           send('delta', { text: chunk.text });
         }
